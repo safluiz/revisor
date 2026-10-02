@@ -1,0 +1,46 @@
+name: verificacao
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: vigia
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  vigia:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TZ: America/Sao_Paulo
+      GOOGLE_KEY: ${{ secrets.GOOGLE_KEY }}
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Só segue se o computador principal estiver sem dar sinal (nada é impresso no registro)
+      - name: checar
+        id: checar
+        shell: pwsh
+        run: |
+          ./vigia.ps1 -Modo github -SoChecar *> $null
+          if ($LASTEXITCODE -eq 10) { "agir=1" >> $env:GITHUB_OUTPUT }
+          exit 0
+
+      - name: preparar
+        if: steps.checar.outputs.agir == '1'
+        run: npm install -g @anthropic-ai/claude-code > /dev/null 2>&1
+
+      - name: executar
+        if: steps.checar.outputs.agir == '1'
+        shell: pwsh
+        run: |
+          ./vigia.ps1 -Modo github *> $null
+          exit 0

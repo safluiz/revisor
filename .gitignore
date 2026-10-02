@@ -1,0 +1,10 @@
+# Lista do que PODE ir para o repositório. Todo o resto fica só no computador.
+*
+!.gitignore
+!README.md
+!vigia.ps1
+!agendamento.ps1
+!executar-oculto.vbs
+!.github/
+!.github/workflows/
+!.github/workflows/vigia.yml

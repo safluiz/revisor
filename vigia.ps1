@@ -889,7 +889,7 @@ if ($comErro.Count -gt 0 -and -not $SemNotificacao) {
         try {
             $c = LerControle
             if ($c.execucao -and $c.execucao.por -eq $EuSou) { $c.execucao = $null }
-            if ($Modo -eq 'pc') { $c.pcVistoEm = (Get-Date).ToString('o') }
+            if ($Modo -eq 'pc') { $c.pcVistoEm = (Get-Date).ToString('o') } else { $c['githubVistoEm'] = (Get-Date).ToString('o') }
             foreach ($r in $script:registros) { [void]$c.registros.Add($r) }
             while ($c.registros.Count -gt 300) { $c.registros.RemoveAt(0) }
             GravarControle $c

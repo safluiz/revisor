@@ -290,6 +290,28 @@ function LerMateria($cod) {
             [void]$ctas.Add($(if ($mh.Success) { $mh.Groups[1].Value.Trim() } else { '' }))
         }
     }
+    # Defeitos visuais por parágrafo: tamanho de letra diferente ou parágrafo longo inteiro em negrito
+    $visuais = New-Object System.Collections.ArrayList
+    foreach ($seg in [regex]::Split($corpoHtml, '(?i)</p>|<br\s*/?>\s*<br\s*/?>')) {
+        $txtSeg = Normalizar ([System.Net.WebUtility]::HtmlDecode(($seg -replace '<[^>]+>', ' ')))
+        if ($txtSeg.Length -lt 20) { continue }
+        $inicio = (($txtSeg -split ' ') | Select-Object -First 8) -join ' '
+        if ($seg -match '(?i)font-size\s*:|<small\b|<font\b[^>]*\bsize\s*=') {
+            [void]$visuais.Add([ordered]@{ trecho = $inicio; problema = 'parágrafo com tamanho de letra diferente do restante do texto (defeito visual)' })
+            continue
+        }
+        # chamadas em negrito de propósito (para vídeo, foto, link) não são defeito
+        $ehChamada = $txtSeg -match '[:：]\s*$' -or $txtSeg -match '(?i)^(confira|veja|assista|leia|saiba|clique|receba|acompanhe|ouça)\b'
+        if ($txtSeg.Length -ge 60 -and -not $ehChamada) {
+            $semNegrito = [regex]::Replace($seg, '(?is)<(b|strong)\b[^>]*>.*?</\1>', ' ')
+            $semNegrito = [regex]::Replace($semNegrito, '(?is)<(\w+)\b[^>]*font-weight\s*:\s*(bold|bolder|[6-9]00)[^>]*>.*?</\1>', ' ')
+            $resto = Normalizar ([System.Net.WebUtility]::HtmlDecode(($semNegrito -replace '<[^>]+>', ' ')))
+            $pNegrito = $seg -match '(?i)^\s*<p[^>]*font-weight\s*:\s*(bold|bolder|[6-9]00)'
+            if ($pNegrito -or $resto.Length -lt 5) {
+                [void]$visuais.Add([ordered]@{ trecho = $inicio; problema = 'parágrafo inteiro em negrito (defeito visual)' })
+            }
+        }
+    }
     $autor = ''
     if ($coluna -and $L.regexAutorColuna) {
         $ma = [regex]::Match($html, $L.regexAutorColuna)
@@ -308,7 +330,7 @@ function LerMateria($cod) {
     return [ordered]@{
         cod = $cod; tipo = $(if ($coluna) { 'coluna' } else { 'noticia' }); url = $link
         titulo = $titulo; linha = $linha; corpo = $corpo; autor = $autor
-        publicado = $data; diaPub = $dia; ctas = @($ctas)
+        publicado = $data; diaPub = $dia; ctas = @($ctas); visuais = @($visuais)
     }
 }
 
@@ -379,6 +401,19 @@ function AlteracaoWpp($n, $problema) {
     return [ordered]@{ n = $n; tipo = 'whatsapp'; original = ''; corrigido = ''; destaque = 'clique aqui'; explicacao = $problema; estado = 'pendente' }
 }
 
+# Defeitos visuais: uma alteração por parágrafo afetado
+function AlteracoesVisuais($m, $n) {
+    $lst = @()
+    foreach ($v in @($m.visuais)) {
+        $n++
+        $lst += [ordered]@{ n = $n; tipo = 'visual'; original = ''; corrigido = ''; destaque = ($v.trecho + '...'); explicacao = $v.problema; estado = 'pendente' }
+    }
+    return ,$lst
+}
+function VisualAindaExiste($a, $m) {
+    foreach ($v in @($m.visuais)) { if (($v.trecho + '...') -eq $a.destaque -and $v.problema -eq $a.explicacao) { return $true } }
+    return $false
+}
 function CodigosDaCapa() {
     $html = Baixar $Base
     $cods = New-Object System.Collections.Generic.HashSet[string]
@@ -529,6 +564,10 @@ function AtualizarSituacao($e, $m) {
         if ($a.estado -ne 'pendente') { continue }
         $codA = ($e.cod + '-' + $a.n).ToUpper()
         if ($ciencias -contains $e.cod.ToUpper() -or $ciencias -contains $codA) { $a.estado = 'dispensada'; $alterou = $true; continue }
+        if ($a.tipo -eq 'visual') {
+            if ($m -and -not (VisualAindaExiste $a $m)) { $a.estado = 'aplicada'; $alterou = $true }
+            continue
+        }
         if ($a.tipo -eq 'whatsapp') {
             if ($m) {
                 $prob = ProblemaWpp $m
@@ -616,7 +655,7 @@ function Revisar($entradas) {
 
 $prontas = @($estado.materias | Where-Object { $_.status -eq 'aguardando' -and (DataIso $_.vistoEm) -le $agora.AddMinutes(-$EsperaMin + 0.2) })
 $prontas += @($estado.anteriores | Where-Object { $_.status -eq 'aguardando' })
-$probWpp = @{}
+$probWpp = @{}; $visPorCod = @{}
 if ($prontas.Count -gt 0) {
     for ($i = 0; $i -lt $prontas.Count; $i += $MaxPorLote) {
         $lote = @($prontas[$i..([Math]::Min($i + $MaxPorLote, $prontas.Count) - 1)])
@@ -624,7 +663,7 @@ if ($prontas.Count -gt 0) {
         $validas = New-Object System.Collections.ArrayList
         foreach ($e in $lote) {
             $m = LerMateria $e.cod
-            if ($m) { $e.texto = [ordered]@{ titulo = $m.titulo; linha = $m.linha; corpo = $m.corpo }; $e.titulo = $m.titulo; $e.publicado = $m.publicado; $probWpp[$e.cod] = (ProblemaWpp $m); [void]$validas.Add($e) }
+            if ($m) { $e.texto = [ordered]@{ titulo = $m.titulo; linha = $m.linha; corpo = $m.corpo }; $e.titulo = $m.titulo; $e.publicado = $m.publicado; $probWpp[$e.cod] = (ProblemaWpp $m); $visPorCod[$e.cod] = $m; [void]$validas.Add($e) }
         }
         if ($validas.Count -eq 0) { continue }
         try {
@@ -641,6 +680,7 @@ if ($prontas.Count -gt 0) {
                     [void]$lst.Add([ordered]@{ n = $n; original = $a.original; corrigido = $a.corrigido; destaque = $dest; explicacao = $a.explicacao; estado = 'pendente' })
                 }
                 if ($probWpp[$e.cod]) { $n++; [void]$lst.Add((AlteracaoWpp $n $probWpp[$e.cod])) }
+                foreach ($av in (AlteracoesVisuais $visPorCod[$e.cod] $n)) { $n++; [void]$lst.Add($av) }
                 $e.alteracoes = $lst
                 $e.status = if ($lst.Count -gt 0) { 'pendente' } else { 'ok' }
                 $e.revisadaEm = (Get-Date).ToString('o')
@@ -817,7 +857,7 @@ function GerarDocHistorico() {
             }
             $x += Par @((Link $e.titulo $e.url -b), (Run "  ·  cód. $($e.cod)  ·  $sit" -cor '7F7F7F' -tam 18)) 60 20
             foreach ($a in $e.alteracoes) {
-                $desc = if ($a.tipo -eq 'whatsapp') { 'Link: ' + $a.explicacao } else { '"' + $a.original + '" → "' + $a.corrigido + '": ' + $a.explicacao }
+                $desc = if ($a.tipo -eq 'whatsapp') { 'Link: ' + $a.explicacao } elseif ($a.tipo -eq 'visual') { 'Visual: ' + $a.destaque + ' ' + $a.explicacao } else { '"' + $a.original + '" → "' + $a.corrigido + '": ' + $a.explicacao }
                 $x += Par @((Run "$($a.n). " -b -tam 18), (Run ($desc + ' [' + $a.estado + ']') -tam 18)) 0 20 -recuo 284
             }
         }

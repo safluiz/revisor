@@ -1,7 +1,7 @@
 ﻿# Vigia de revisão de matérias
 # Roda no PC (Agendador de Tarefas, a cada 2 minutos) e, como reserva, no GitHub Actions
 # quando o PC está desligado. Configuração, regras, memória e documentos ficam numa pasta
-# do Google Drive (subpasta "_sistema"), acessada por uma conta de serviço.
+# do Google Drive (subpasta "code"), acessada por uma conta de serviço.
 # Sem matéria nova, não chama o Claude (não gasta créditos).
 
 param(
@@ -163,9 +163,9 @@ $seg = LerSegredos
 $script:tokenG = TokenGoogle $seg.chaveGoogle
 
 # Localiza a pasta do sistema e a pasta principal (a conta de serviço só enxerga a pasta compartilhada)
-$q = [uri]::EscapeDataString("name='_sistema' and mimeType='application/vnd.google-apps.folder' and trashed=false")
+$q = [uri]::EscapeDataString("name='code' and mimeType='application/vnd.google-apps.folder' and trashed=false")
 $pastaSis = (DriveJson "https://www.googleapis.com/drive/v3/files?q=$q&fields=files(id,parents)").files | Select-Object -First 1
-if (-not $pastaSis) { throw 'Pasta _sistema não encontrada no Drive.' }
+if (-not $pastaSis) { throw 'Pasta code não encontrada no Drive.' }
 $filhosSis = DriveFilhos $pastaSis.id
 $script:ids = @{ controle = $filhosSis['controle.json']; estado = $filhosSis['estado.json']; config = $filhosSis['config.json']; regras = $filhosSis['regras.md']; principal = $pastaSis.parents[0] }
 
@@ -196,7 +196,13 @@ $Modelo = $Cfg.modelo; $Esforco = $Cfg.esforco
 $EsperaMin = [double]$Cfg.esperaMinutos; $MaxPorLote = [int]$Cfg.maxPorLote
 $ArqRegrasLocal = Join-Path $PastaTmp ('regras-' + [guid]::NewGuid().ToString('N') + '.md')
 [IO.File]::WriteAllText($ArqRegrasLocal, (DriveTexto $script:ids.regras), $Utf8)
+# Documentos: na pasta principal ou em qualquer subpasta dela (um nível)
 $filhosPrincipal = DriveFilhos $script:ids.principal
+$qSub = [uri]::EscapeDataString("'$($script:ids.principal)' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false")
+foreach ($sub in (DriveJson "https://www.googleapis.com/drive/v3/files?q=$qSub&fields=files(id,name)").files) {
+    $fs = DriveFilhos $sub.id
+    foreach ($k in $fs.Keys) { if (-not $filhosPrincipal.ContainsKey($k)) { $filhosPrincipal[$k] = $fs[$k] } }
+}
 $script:ids.documento = $filhosPrincipal[$Cfg.arquivos.documento]
 $script:ids.historico = $filhosPrincipal[$Cfg.arquivos.historico]
 $script:ids.ciencia   = $filhosPrincipal[$Cfg.arquivos.ciencia]

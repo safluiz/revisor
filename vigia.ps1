@@ -919,7 +919,9 @@ if ($comErro.Count -gt 0 -and -not $SemNotificacao) {
             }
             $ok = @($novasRevisadas | Where-Object { $_.status -ne 'pendente' })
             if ($ok.Count) { $linhas += ''; $linhas += ('✅ Sem alterações: ' + $ok.Count) }
-            if ($Cfg.linkFimTelegram) { $linhas += ''; $linhas += (EscTg $Cfg.linkFimTelegram) }
+            # links fixos no fim da mensagem (um ou vários, na ordem da configuração)
+            $fixos = @($Cfg.linkFimTelegram | Where-Object { $_ })
+            if ($fixos.Count) { $linhas += ''; foreach ($lk in $fixos) { $linhas += (EscTg $lk) } }
             $texto = ($linhas -join "`n")
             if ($texto.Length -gt 3900) { $texto = $texto.Substring(0, 3900) + "`n…" }
             $corpoTg = @{ chat_id = $seg.tgChat; text = $texto; parse_mode = 'HTML'; disable_web_page_preview = $true } | ConvertTo-Json

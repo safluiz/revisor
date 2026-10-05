@@ -190,7 +190,7 @@ $script:controle = $c
 $Cfg = ParaHash ((DriveTexto $script:ids.config) | ConvertFrom-Json)
 $Base = ([string]$Cfg.site).TrimEnd('/')
 $HostSite = ([uri]$Base).Host -replace '^www\.', ''
-$L = $Cfg.leitura
+$Leitura = $Cfg.leitura   # (nome único: o PowerShell não diferencia $L de $l)
 $LinksWpp = @($Cfg.gruposWhatsApp)
 $Modelo = $Cfg.modelo; $Esforco = $Cfg.esforco
 $EsperaMin = [double]$Cfg.esperaMinutos; $MaxPorLote = [int]$Cfg.maxPorLote
@@ -223,7 +223,7 @@ function HtmlParaTexto($html) {
     $t = [regex]::Replace($t, '<[^>]+>', '')
     $t = [System.Net.WebUtility]::HtmlDecode($t)
     $t = $t -replace [char]0xA0, ' '
-    $ignorar = @($L.linhasIgnorar)
+    $ignorar = @($Leitura.linhasIgnorar)
     $linhas = foreach ($l in ($t -split "`n")) {
         $l = ($l -replace '[ \t]+', ' ').Trim()
         if ($l -eq '') { continue }
@@ -241,7 +241,7 @@ function Normalizar($s) {
 
 function UrlMateria($cod) {
     $coluna = $cod.StartsWith('C')
-    $modelo = if ($coluna) { $L.urlColuna } else { $L.urlNoticia }
+    $modelo = if ($coluna) { $Leitura.urlColuna } else { $Leitura.urlNoticia }
     return $modelo.Replace('{site}', $Base).Replace('{id}', $cod.TrimStart('C'))
 }
 
@@ -251,9 +251,9 @@ function LerMateria($cod) {
     $url = UrlMateria $cod
     $html = Baixar $url
     if (-not $html) { return $null }
-    $ini = if ($coluna) { $html.IndexOf($L.inicioColuna) } else { $html.IndexOf($L.inicioNoticia) }
+    $ini = if ($coluna) { $html.IndexOf($Leitura.inicioColuna) } else { $html.IndexOf($Leitura.inicioNoticia) }
     if ($ini -lt 0) { return $null }
-    $marcaFim = if ($coluna) { $L.fimColuna } else { $L.fimNoticia }
+    $marcaFim = if ($coluna) { $Leitura.fimColuna } else { $Leitura.fimNoticia }
     $fim = $html.Length
     $p = $html.IndexOf($marcaFim, $ini); if ($p -gt 0) { $p = $html.LastIndexOf('<', $p) }; if ($p -gt 0 -and $p -lt $fim) { $fim = $p }
     $bloco = $html.Substring($ini, $fim - $ini)
@@ -262,15 +262,15 @@ function LerMateria($cod) {
     if (-not $mt.Success) { return $null }
     $titulo = Normalizar (HtmlParaTexto $mt.Groups[1].Value)
     if (-not $titulo) { return $null }
-    $md = [regex]::Match($bloco, '(?is)class="' + [regex]::Escape($L.classeData) + '"[^>]*>(.*?)</div>')
+    $md = [regex]::Match($bloco, '(?is)class="' + [regex]::Escape($Leitura.classeData) + '"[^>]*>(.*?)</div>')
     $data = Normalizar (HtmlParaTexto $md.Groups[1].Value)
-    $padraoLinha = '(?is)<p class="' + [regex]::Escape($L.classeLinhaFina) + '"[^>]*>(.*?)</p>'
+    $padraoLinha = '(?is)<p class="' + [regex]::Escape($Leitura.classeLinhaFina) + '"[^>]*>(.*?)</p>'
     $ml = [regex]::Match($bloco, $padraoLinha)
     $linha = if ($ml.Success) { Normalizar (HtmlParaTexto $ml.Groups[1].Value) } else { '' }
 
     # Corpo: tudo depois do bloco de compartilhamento/imagem
     $corpoHtml = $bloco
-    $pc = $bloco.IndexOf('class="' + $L.classeCompartilhar + '"')
+    $pc = $bloco.IndexOf('class="' + $Leitura.classeCompartilhar + '"')
     if ($pc -ge 0) {
         $corpoHtml = $bloco.Substring($pc)
         $pi = [regex]::Match($corpoHtml, '(?is)<img[^>]*>\s*</div>')
@@ -292,29 +292,29 @@ function LerMateria($cod) {
     }
     # Defeitos visuais por parágrafo: tamanho de letra diferente ou parágrafo longo inteiro em negrito
     $visuais = New-Object System.Collections.ArrayList
-    foreach ($seg in [regex]::Split($corpoHtml, '(?i)</p>|<br\s*/?>\s*<br\s*/?>')) {
-        $txtSeg = Normalizar ([System.Net.WebUtility]::HtmlDecode(($seg -replace '<[^>]+>', ' ')))
+    foreach ($trechoHtml in [regex]::Split($corpoHtml, '(?i)</p>|<br\s*/?>\s*<br\s*/?>')) {
+        $txtSeg = Normalizar ([System.Net.WebUtility]::HtmlDecode(($trechoHtml -replace '<[^>]+>', ' ')))
         if ($txtSeg.Length -lt 20) { continue }
         $inicio = (($txtSeg -split ' ') | Select-Object -First 8) -join ' '
-        if ($seg -match '(?i)font-size\s*:|<small\b|<font\b[^>]*\bsize\s*=') {
+        if ($trechoHtml -match '(?i)font-size\s*:|<small\b|<font\b[^>]*\bsize\s*=') {
             [void]$visuais.Add([ordered]@{ trecho = $inicio; problema = 'parágrafo com tamanho de letra diferente do restante do texto (defeito visual)' })
             continue
         }
         # chamadas em negrito de propósito (para vídeo, foto, link) não são defeito
         $ehChamada = $txtSeg -match '[:：]\s*$' -or $txtSeg -match '(?i)^(confira|veja|assista|leia|saiba|clique|receba|acompanhe|ouça)\b'
         if ($txtSeg.Length -ge 60 -and -not $ehChamada) {
-            $semNegrito = [regex]::Replace($seg, '(?is)<(b|strong)\b[^>]*>.*?</\1>', ' ')
+            $semNegrito = [regex]::Replace($trechoHtml, '(?is)<(b|strong)\b[^>]*>.*?</\1>', ' ')
             $semNegrito = [regex]::Replace($semNegrito, '(?is)<(\w+)\b[^>]*font-weight\s*:\s*(bold|bolder|[6-9]00)[^>]*>.*?</\1>', ' ')
             $resto = Normalizar ([System.Net.WebUtility]::HtmlDecode(($semNegrito -replace '<[^>]+>', ' ')))
-            $pNegrito = $seg -match '(?i)^\s*<p[^>]*font-weight\s*:\s*(bold|bolder|[6-9]00)'
+            $pNegrito = $trechoHtml -match '(?i)^\s*<p[^>]*font-weight\s*:\s*(bold|bolder|[6-9]00)'
             if ($pNegrito -or $resto.Length -lt 5) {
                 [void]$visuais.Add([ordered]@{ trecho = $inicio; problema = 'parágrafo inteiro em negrito (defeito visual)' })
             }
         }
     }
     $autor = ''
-    if ($coluna -and $L.regexAutorColuna) {
-        $ma = [regex]::Match($html, $L.regexAutorColuna)
+    if ($coluna -and $Leitura.regexAutorColuna) {
+        $ma = [regex]::Match($html, $Leitura.regexAutorColuna)
         if ($ma.Success) { $autor = Normalizar (HtmlParaTexto $ma.Groups[1].Value) }
     }
     $link = $url
@@ -357,7 +357,7 @@ function LinkInternoOk($url, $saltos = 0) {
             return (LinkInternoOk $dest ($saltos + 1))
         }
         if ($cod -ne 200) { return $false }
-        if ($url -match $L.regexUrlMateria) { return [bool]($corpo -match '<h1' -and $corpo -match $L.regexPaginaMateria) }
+        if ($url -match $Leitura.regexUrlMateria) { return [bool]($corpo -match '<h1' -and $corpo -match $Leitura.regexPaginaMateria) }
         return $true
     } catch { return $false }
 }
@@ -419,8 +419,8 @@ function CodigosDaCapa() {
     $cods = New-Object System.Collections.Generic.HashSet[string]
     if (-not $html) { return ,@() }
     $dom = [regex]::Escape($HostSite)
-    foreach ($m in [regex]::Matches($html, $dom + $L.regexCapaColuna)) { [void]$cods.Add('C' + $m.Groups[1].Value) }
-    foreach ($m in [regex]::Matches($html, $dom + $L.regexCapaNoticia)) { [void]$cods.Add($m.Groups[1].Value) }
+    foreach ($m in [regex]::Matches($html, $dom + $Leitura.regexCapaColuna)) { [void]$cods.Add('C' + $m.Groups[1].Value) }
+    foreach ($m in [regex]::Matches($html, $dom + $Leitura.regexCapaNoticia)) { [void]$cods.Add($m.Groups[1].Value) }
     return ,@($cods)
 }
 
@@ -930,12 +930,22 @@ if ($comErro.Count -gt 0 -and -not $SemNotificacao) {
 
 } catch {
     Log ('ERRO: ' + $_.Exception.Message + ' @ linha ' + $_.InvocationInfo.ScriptLineNumber)
+    $script:falhou = $true; $script:msgFalha = $_.Exception.Message
 } finally {
     # Libera a trava compartilhada e guarda os registros desta execução
     if ($temTrava -and $script:ids -and $script:ids.controle) {
         try {
             $c = LerControle
             if ($c.execucao -and $c.execucao.por -eq $EuSou) { $c.execucao = $null }
+            # Alarme: 3 falhas seguidas geram um aviso no Telegram (uma vez só, até voltar a funcionar)
+            $c['falhasSeguidas'] = $(if ($script:falhou) { [int]$c.falhasSeguidas + 1 } else { 0 })
+            if ($c.falhasSeguidas -eq 3 -and $seg -and $seg.tgToken -and $seg.tgChat) {
+                try {
+                    $txtAlarme = '❗ O revisor automático está falhando (' + $EuSou + ') há 3 verificações seguidas. As matérias novas não estão sendo revisadas. Erro: ' + $script:msgFalha
+                    $corpoAl = @{ chat_id = $seg.tgChat; text = $txtAlarme } | ConvertTo-Json
+                    Invoke-RestMethod -Method Post "https://api.telegram.org/bot$($seg.tgToken)/sendMessage" -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($corpoAl)) | Out-Null
+                } catch {}
+            }
             if ($Modo -eq 'pc') { $c.pcVistoEm = (Get-Date).ToString('o') } else { $c['githubVistoEm'] = (Get-Date).ToString('o') }
             foreach ($r in $script:registros) { [void]$c.registros.Add($r) }
             while ($c.registros.Count -gt 300) { $c.registros.RemoveAt(0) }

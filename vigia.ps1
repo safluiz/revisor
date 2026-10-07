@@ -245,6 +245,76 @@ function UrlMateria($cod) {
     return $modelo.Replace('{site}', $Base).Replace('{id}', $cod.TrimStart('C'))
 }
 
+# Defeitos visuais, imitando como o navegador monta os parágrafos:
+# - tamanho: no site, só o parágrafo que é filho direto da área da matéria tem a letra no tamanho normal;
+#   parágrafo "embrulhado" em outro elemento, texto solto ou marcação de tamanho ficam com letra menor;
+# - negrito: parágrafo jornalístico (longo, terminado em ponto) inteiro em negrito. Subtítulos e chamadas não contam.
+function DefeitosVisuais($html) {
+    $res = New-Object System.Collections.ArrayList
+    $h = [regex]::Replace([string]$html, '(?is)<!--.*?-->|<(script|style|iframe|blockquote|table|ul|ol|dl|figure|svg|noscript|video|audio)\b.*?</\1>', ' ')
+    $fechaP = @('p','div','section','article','aside','header','footer','nav','h1','h2','h3','h4','h5','h6','pre','address','center','fieldset','form','hr','menu')
+    $blocos = @('p','div','section','article','aside','header','footer','nav','h1','h2','h3','h4','h5','h6','pre','address','center','fieldset','form','li','dd','dt')
+    $vazios = @('br','img','hr','input','meta','link','wbr','source','col','embed','param','area')
+    $classeIgnorar = '(?i)publicidade|pontilhada|fonte|banner|bxslider|instagram|twitter|tiktok|youtube|embed|legenda|compartilhar|imagem|galeria|amv-|dpt-|vote|party|resultado|placar'
+    $pilha = New-Object System.Collections.ArrayList
+    $pars = [ordered]@{}
+    $seqSolto = 0; $seqBloco = 0
+    foreach ($tk in [regex]::Matches($h, '(?s)<(/?)([a-zA-Z][a-zA-Z0-9]*)([^>]*)>|[^<]+|<')) {
+        if ($tk.Groups[2].Success) {
+            $tag = $tk.Groups[2].Value.ToLower(); $fecha = $tk.Groups[1].Value -eq '/'; $attrs = $tk.Groups[3].Value
+            if ($fecha) {
+                for ($k = $pilha.Count - 1; $k -ge 0; $k--) {
+                    if ($pilha[$k].tag -eq $tag) { while ($pilha.Count -gt $k) { $pilha.RemoveAt($pilha.Count - 1) }; break }
+                }
+                $seqSolto++
+                continue
+            }
+            if ($vazios -contains $tag) { continue }
+            if ($fechaP -contains $tag) {
+                for ($k = $pilha.Count - 1; $k -ge 0; $k--) {
+                    if ($pilha[$k].tag -eq 'p') { while ($pilha.Count -gt $k) { $pilha.RemoveAt($pilha.Count - 1) }; break }
+                }
+            }
+            $seqBloco++; $seqSolto++
+            $mc = [regex]::Match($attrs, '(?i)(class|id)\s*=\s*"([^"]*)"')
+            $ign = ($mc.Success -and $mc.Groups[2].Value -match $classeIgnorar)
+            $neg = ($tag -eq 'b' -or $tag -eq 'strong' -or $attrs -match '(?i)font-weight\s*:\s*(bold|bolder|[6-9]00)')
+            $tam = ($tag -eq 'small' -or ($tag -eq 'font' -and $attrs -match '(?i)\bsize\s*=') -or $attrs -match '(?i)font-size\s*:')
+            [void]$pilha.Add(@{ tag = $tag; id = $seqBloco; ign = $ign; neg = $neg; tam = $tam })
+            continue
+        }
+        $txt = [System.Net.WebUtility]::HtmlDecode($tk.Value) -replace [char]0xA0, ' '
+        if (-not $txt.Trim()) { continue }
+        if (@($pilha | Where-Object { $_.ign }).Count) { continue }
+        $bl = @($pilha | Where-Object { $blocos -contains $_.tag })
+        if (@($bl | Where-Object { $_.tag -match '^h\d$' }).Count) { continue }
+        $normal = ($bl.Count -eq 1 -and $bl[0].tag -eq 'p')
+        $chave = if ($bl.Count) { 'b' + $bl[$bl.Count - 1].id } else { 's' + $seqSolto }
+        if (-not $pars.Contains($chave)) { $pars[$chave] = @{ texto = ''; negrito = 0; menor = $false } }
+        $pp = $pars[$chave]
+        $pp.texto += $txt
+        if (@($pilha | Where-Object { $_.neg }).Count) { $pp.negrito += $txt.Trim().Length }
+        if (-not $normal -or @($pilha | Where-Object { $_.tam }).Count) { $pp.menor = $true }
+    }
+    $menores = @(); $negritos = @()
+    foreach ($pp in $pars.Values) {
+        $tx = Normalizar $pp.texto
+        if ($tx.Length -lt 20) { continue }
+        $pular = $false; foreach ($ig in @($Leitura.linhasIgnorar)) { if ($ig -and $tx.StartsWith($ig)) { $pular = $true } }
+        if ($pular) { continue }
+        $inicio = (($tx -split ' ') | Select-Object -First 8) -join ' '
+        if ($pp.menor) { $menores += $inicio; continue }
+        $semEspaco = ($tx -replace '\s', '').Length
+        $tudoNegrito = $pp.negrito -ge ($tx.Length - 3) -or $pp.negrito -ge $semEspaco
+        $ehParagrafo = $tx.Length -ge 60 -and $tx -match '[\.!\?\u2026]["\u201D\u2019\)]?$'
+        $ehChamada = $tx -match '(?i)^(confira|veja|assista|leia|saiba|clique|receba|acompanhe|ouça)\b'
+        if ($tudoNegrito -and $ehParagrafo -and -not $ehChamada) { $negritos += $inicio }
+    }
+    foreach ($m in ($menores | Select-Object -First 3)) { [void]$res.Add([ordered]@{ trecho = $m; problema = 'parágrafo com letra menor que o restante do texto (defeito visual)' }) }
+    if ($menores.Count -gt 3) { [void]$res.Add([ordered]@{ trecho = 'e outros ' + ($menores.Count - 3) + ' parágrafos'; problema = 'também com letra menor (defeito visual)' }) }
+    foreach ($m in $negritos) { [void]$res.Add([ordered]@{ trecho = $m; problema = 'parágrafo inteiro em negrito (defeito visual)' }) }
+    return ,$res
+}
 # Lê uma matéria. $cod = "25836" (notícia) ou "C2667" (coluna). Retorna $null se não existir.
 function LerMateria($cod) {
     $coluna = $cod.StartsWith('C')
@@ -290,28 +360,8 @@ function LerMateria($cod) {
             [void]$ctas.Add($(if ($mh.Success) { $mh.Groups[1].Value.Trim() } else { '' }))
         }
     }
-    # Defeitos visuais por parágrafo: tamanho de letra diferente ou parágrafo longo inteiro em negrito
-    $visuais = New-Object System.Collections.ArrayList
-    foreach ($trechoHtml in [regex]::Split($corpoHtml, '(?i)</p>|<br\s*/?>\s*<br\s*/?>')) {
-        $txtSeg = Normalizar ([System.Net.WebUtility]::HtmlDecode(($trechoHtml -replace '<[^>]+>', ' ')))
-        if ($txtSeg.Length -lt 20) { continue }
-        $inicio = (($txtSeg -split ' ') | Select-Object -First 8) -join ' '
-        if ($trechoHtml -match '(?i)font-size\s*:|<small\b|<font\b[^>]*\bsize\s*=') {
-            [void]$visuais.Add([ordered]@{ trecho = $inicio; problema = 'parágrafo com tamanho de letra diferente do restante do texto (defeito visual)' })
-            continue
-        }
-        # chamadas em negrito de propósito (para vídeo, foto, link) não são defeito
-        $ehChamada = $txtSeg -match '[:：]\s*$' -or $txtSeg -match '(?i)^(confira|veja|assista|leia|saiba|clique|receba|acompanhe|ouça)\b'
-        if ($txtSeg.Length -ge 60 -and -not $ehChamada) {
-            $semNegrito = [regex]::Replace($trechoHtml, '(?is)<(b|strong)\b[^>]*>.*?</\1>', ' ')
-            $semNegrito = [regex]::Replace($semNegrito, '(?is)<(\w+)\b[^>]*font-weight\s*:\s*(bold|bolder|[6-9]00)[^>]*>.*?</\1>', ' ')
-            $resto = Normalizar ([System.Net.WebUtility]::HtmlDecode(($semNegrito -replace '<[^>]+>', ' ')))
-            $pNegrito = $trechoHtml -match '(?i)^\s*<p[^>]*font-weight\s*:\s*(bold|bolder|[6-9]00)'
-            if ($pNegrito -or $resto.Length -lt 5) {
-                [void]$visuais.Add([ordered]@{ trecho = $inicio; problema = 'parágrafo inteiro em negrito (defeito visual)' })
-            }
-        }
-    }
+    $visuais = DefeitosVisuais $corpoHtml
+
     $autor = ''
     if ($coluna -and $Leitura.regexAutorColuna) {
         $ma = [regex]::Match($html, $Leitura.regexAutorColuna)
